@@ -1,0 +1,49 @@
+MYSPA - ACTUALIZACIÓN DE CATÁLOGO
+================================
+
+Este paquete es una actualización sobre el proyecto que ya tienes funcionando.
+NO borres tu carpeta actual, NO borres la base de datos y NO ejecutes DROP TABLE.
+
+1) Haz una copia de tu carpeta actual MySpa y, si tienes datos importantes,
+   respalda la base myspa desde MySQL Workbench (Data Export).
+2) Copia los archivos de esta actualización a tu carpeta actual:
+   D:\heezl\Escritorio\rafa\MySpa
+   Conserva exactamente las subcarpetas scripts, server y client.
+   Si Windows pregunta, elige "Reemplazar los archivos en el destino".
+   NO reemplaces .env, archivos de imágenes o CREDENCIALES_LOCALES.txt.
+3) Abre CMD y ejecuta:
+
+   cd /d D:\heezl\Escritorio\rafa\MySpa
+   npm run catalogo:revisar
+   npm run catalogo
+   npm run dev
+
+4) Abre http://127.0.0.1:5173/catalogo
+
+QUÉ CAMBIA
+- 18 ediciones reales con ISBN, autores, editoriales y ejemplares.
+- Categorías Cómics, Novela gráfica, Novela fantástica,
+  Ciencia ficción, Filosofía, Pensamiento político.
+- Portadas de Open Library por ISBN y diseño de respaldo si no existe.
+- Administración: botón 'Usar portada por ISBN', vista previa,
+  o subir portada PNG/JPG/WebP de máximo 2 MB después de guardar.
+- Los correos técnicos de autores no se publican como datos de contacto reales.
+
+SEGURIDAD DE DATOS
+- El importador inserta solo obras con ISBN aún no registrado.
+- Si lo ejecutas de nuevo, informa 18 ISBN ya existentes y no los duplica.
+- No elimina o altera registros previos, préstamos, usuarios ni reservas.
+- Cada ejecución usa una transacción; ante error, revierte sus cambios.
+- No necesitas volver a ejecutar 'npm run setup' ni importar SQL adicional.
+
+ATENCIÓN
+- Las portadas externas requieren Internet; la PWA funciona sin esas
+  imágenes en caché usando el diseño de respaldo.
+- Los libros son registros de demostración de INVENTARIO: sus ejemplares
+  disponibles son datos de prueba, no copias físicas verificadas.
+- Los ISBN corresponden a ediciones principalmente en INGLÉS; se mantiene
+  su título original para que coincida con la portada/ISBN. Las sinopsis
+  están escritas en español.
+- Datos de contacto de autores reales NO se inventan públicamente.
+
+Si hay error, copia el texto completo de la terminal.
