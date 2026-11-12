@@ -1,8 +1,10 @@
 node_modules/
 client/dist/
 .env
-CREDENCIALES_LOCALES.txt
-server/uploads/
+.env.*
+!.env.example
 *.log
 .DS_Store
 .vscode/
+server/uploads/
+CREDENCIALES_LOCALES.txt

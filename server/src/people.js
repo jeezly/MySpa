@@ -1,80 +1,227 @@
-import {Router} from 'express';
-import {z} from 'zod';
-import {pool,asyncRoute,withTx,queryOne,queryRows,fail,ok,parse,requireId,personSchema,passwordSchema,insertPerson,updatePerson,hashPassword,commonSelect,audit} from './core.js';
-import {role} from './auth.js';
-const router=Router();
-const baseEmployees=`SELECT c.id AS cuenta_id,c.rol,c.habilitada,c.creada_en,${commonSelect},
- CONCAT_WS(' ',p.primer_nombre,p.segundo_nombre,p.apellido_paterno,p.apellido_materno) AS nombre
- FROM cuentas c JOIN personas p ON p.id=c.persona_id`;
-const baseAffiliates=`SELECT c.id AS cuenta_id,c.habilitada,${commonSelect},a.estatus,a.verificacion,a.documento_tipo,a.verificado_en,
- CONCAT_WS(' ',p.primer_nombre,p.segundo_nombre,p.apellido_paterno,p.apellido_materno) AS nombre,
- (SELECT COUNT(*) FROM prestamos pr WHERE pr.afiliado_id=c.id AND pr.devuelto_en IS NULL) AS prestamos_activos
- FROM afiliados a JOIN cuentas c ON c.id=a.cuenta_id JOIN personas p ON p.id=c.persona_id`;
+import { Router } from 'express';
+import { z } from 'zod';
+import { collection, nextId } from './db.js';
+import {
+  asyncRoute, audit, fail, fullName, hashPassword, insertPerson,
+  ok, parse, passwordSchema, personSchema, requireId,
+  updatePerson, withTx,
+} from './core.js';
+import { role } from './auth.js';
 
-router.get('/staff',role('ADMIN'),asyncRoute(async(req,res)=>{
- ok(res,await queryRows(pool,`${baseEmployees} WHERE c.rol IN ('ADMIN','BIBLIOTECARIO') AND c.eliminada_en IS NULL ORDER BY c.id DESC`));
+const router = Router();
+
+async function personRecord(account) {
+  const person = await collection('personas').findOne({ id: account.persona_id });
+  if (!person) return null;
+  const { _id, id, ...fields } = person;
+  return {
+    cuenta_id: account.id,
+    rol: account.rol,
+    habilitada: account.habilitada,
+    creada_en: account.creada_en,
+    persona_id: id,
+    ...fields,
+    nombre: fullName(person),
+  };
+}
+
+router.get('/staff', role('ADMIN'), asyncRoute(async (req, res) => {
+  const accounts = await collection('cuentas').find({
+    rol: { $in: ['ADMIN', 'BIBLIOTECARIO'] }, eliminada_en: null,
+  }).sort({ id: -1 }).toArray();
+  const rows = (await Promise.all(accounts.map(personRecord))).filter(Boolean);
+  ok(res, rows);
 }));
-router.post('/staff',role('ADMIN'),asyncRoute(async(req,res)=>{
- const data=parse(personSchema.extend({rol:z.enum(['ADMIN','BIBLIOTECARIO']),password:passwordSchema}),req.body);
- const {rol,password,...person}=data;
- const id=await withTx(async db=>{
-  const p=await insertPerson(db,person);
-  const [r]=await db.execute('INSERT INTO cuentas (persona_id,email,password_hash,rol) VALUES (?,?,?,?)',[p,person.email,await hashPassword(password),rol]);
-  await audit(db,req.user.id,'CREAR','empleados',r.insertId,{rol});return r.insertId;
- });ok(res,{id},201);
+
+router.post('/staff', role('ADMIN'), asyncRoute(async (req, res) => {
+  const data = parse(personSchema.extend({
+    rol: z.enum(['ADMIN', 'BIBLIOTECARIO']),
+    password: passwordSchema,
+  }), req.body);
+  const { rol, password, ...person } = data;
+  const passwordHash = await hashPassword(password);
+  const id = await withTx(async (session) => {
+    const personId = await insertPerson(session, person);
+    const accountId = await nextId('cuentas', session);
+    await collection('cuentas').insertOne({
+      id: accountId,
+      persona_id: personId,
+      email: person.email,
+      password_hash: passwordHash,
+      rol,
+      habilitada: true,
+      eliminada_en: null,
+      ultimo_acceso: null,
+      creada_en: new Date(),
+    }, { session });
+    await audit(session, req.user.id, 'CREAR', 'empleados', accountId, { rol });
+    return accountId;
+  });
+  ok(res, { id }, 201);
 }));
-router.patch('/staff/:id',role('ADMIN'),asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);
- const data=parse(personSchema.extend({rol:z.enum(['ADMIN','BIBLIOTECARIO']),password:passwordSchema.optional()}),req.body);
- const {rol,password,...person}=data;
- await withTx(async db=>{
-  const old=await queryOne(db,"SELECT c.*,p.id AS persona_id FROM cuentas c JOIN personas p ON p.id=c.persona_id WHERE c.id=? AND c.rol IN ('ADMIN','BIBLIOTECARIO') AND c.eliminada_en IS NULL FOR UPDATE",[id]);
-  if(!old)fail(404,'Empleado no encontrado');
-  if(old.rol==='ADMIN'&&rol!=='ADMIN'){
-   const admins=await queryRows(db,"SELECT id FROM cuentas WHERE rol='ADMIN' AND habilitada=1 AND eliminada_en IS NULL FOR UPDATE");if(admins.length<=1)fail(409,'Debe quedar al menos un administrador activo');
+
+router.patch('/staff/:id', role('ADMIN'), asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  const data = parse(personSchema.extend({
+    rol: z.enum(['ADMIN', 'BIBLIOTECARIO']),
+    password: passwordSchema.optional(),
+  }), req.body);
+  const { rol, password, ...person } = data;
+  const passwordHash = password ? await hashPassword(password) : null;
+
+  await withTx(async (session) => {
+    const account = await collection('cuentas').findOne({
+      id,
+      rol: { $in: ['ADMIN', 'BIBLIOTECARIO'] },
+      eliminada_en: null,
+    }, { session });
+    if (!account) fail(404, 'Empleado no encontrado');
+    if (id === req.user.id && rol !== account.rol) {
+      fail(409, 'No puedes cambiar tu propio rol');
+    }
+    if (account.rol === 'ADMIN' && rol !== 'ADMIN') {
+      const admins = await collection('cuentas').countDocuments({
+        rol: 'ADMIN',
+        habilitada: true,
+        eliminada_en: null,
+      }, { session });
+      if (admins <= 1) fail(409, 'Debe quedar al menos un administrador activo');
+    }
+    await updatePerson(session, account.persona_id, person);
+    await collection('cuentas').updateOne({ id }, {
+      $set: {
+        email: person.email,
+        rol,
+        ...(passwordHash ? { password_hash: passwordHash } : {}),
+      },
+    }, { session });
+    if (passwordHash || rol !== account.rol) {
+      await collection('sesiones').updateMany(
+        { cuenta_id: id }, { $set: { revocada_en: new Date() } }, { session },
+      );
+    }
+    await audit(session, req.user.id, 'EDITAR', 'empleados', id, { rol });
+  });
+  ok(res, { mensaje: 'Empleado actualizado' });
+}));
+
+router.delete('/staff/:id', role('ADMIN'), asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  if (id === req.user.id) fail(409, 'No puedes eliminar tu propia cuenta');
+  await withTx(async (session) => {
+    const account = await collection('cuentas').findOne({
+      id,
+      rol: { $in: ['ADMIN', 'BIBLIOTECARIO'] },
+      eliminada_en: null,
+    }, { session });
+    if (!account) fail(404, 'Empleado no encontrado');
+    if (account.rol === 'ADMIN') {
+      const admins = await collection('cuentas').countDocuments({
+        rol: 'ADMIN',
+        habilitada: true,
+        eliminada_en: null,
+      }, { session });
+      if (admins <= 1) fail(409, 'No se puede eliminar al último administrador');
+    }
+    await collection('cuentas').updateOne({ id }, {
+      $set: { habilitada: false, eliminada_en: new Date() },
+    }, { session });
+    await collection('sesiones').updateMany(
+      { cuenta_id: id }, { $set: { revocada_en: new Date() } }, { session },
+    );
+    await audit(session, req.user.id, 'BAJA_LOGICA', 'empleados', id);
+  });
+  ok(res, { mensaje: 'Empleado eliminado lógicamente' });
+}));
+
+router.get('/affiliates', role('ADMIN', 'BIBLIOTECARIO'), asyncRoute(async (req, res) => {
+  const q = String(req.query.q || '').trim().toLocaleLowerCase('es-MX');
+  if (q.length > 100) fail(422, 'Búsqueda demasiado larga');
+  const accounts = await collection('cuentas').find({
+    rol: 'AFILIADO', eliminada_en: null,
+  }).sort({ id: -1 }).limit(500).toArray();
+  const rows = [];
+
+  for (const account of accounts) {
+    const person = await personRecord(account);
+    const affiliate = await collection('afiliados').findOne({ cuenta_id: account.id });
+    if (!person || !affiliate) continue;
+    if (q && !`${person.nombre} ${account.email}`.toLocaleLowerCase('es-MX').includes(q)) {
+      continue;
+    }
+    const activeLoans = await collection('prestamos').countDocuments({
+      afiliado_id: account.id, devuelto_en: null,
+    });
+    rows.push({
+      ...person,
+      estatus: affiliate.estatus,
+      verificacion: affiliate.verificacion,
+      documento_tipo: affiliate.documento_tipo,
+      verificado_en: affiliate.verificado_en,
+      prestamos_activos: activeLoans,
+    });
+    if (rows.length >= 200) break;
   }
-  if(req.user.id===id&&rol!==old.rol)fail(409,'No puedes cambiar tu propio rol');
-  await updatePerson(db,old.persona_id,person);
-  await db.execute(`UPDATE cuentas SET email=?,rol=?${password?',password_hash=?':''} WHERE id=?`,password?[person.email,rol,await hashPassword(password),id]:[person.email,rol,id]);
-  if(password||rol!==old.rol)await db.execute('UPDATE sesiones SET revocada_en=NOW() WHERE cuenta_id=?',[id]);
-  await audit(db,req.user.id,'EDITAR','empleados',id,{rol});
- });ok(res,{mensaje:'Empleado actualizado'});
+  ok(res, rows);
 }));
-router.delete('/staff/:id',role('ADMIN'),asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);if(id===req.user.id)fail(409,'No puedes eliminar tu propia cuenta');
- await withTx(async db=>{
-  const old=await queryOne(db,"SELECT id,rol FROM cuentas WHERE id=? AND rol IN ('ADMIN','BIBLIOTECARIO') AND eliminada_en IS NULL FOR UPDATE",[id]);if(!old)fail(404,'Empleado no encontrado');
-  if(old.rol==='ADMIN'){
-   const admins=await queryRows(db,"SELECT id FROM cuentas WHERE rol='ADMIN' AND habilitada=1 AND eliminada_en IS NULL FOR UPDATE");if(admins.length<=1)fail(409,'No se puede eliminar el último administrador');
-  }
-  await db.execute('UPDATE cuentas SET habilitada=0,eliminada_en=NOW() WHERE id=?',[id]);
-  await db.execute('UPDATE sesiones SET revocada_en=NOW() WHERE cuenta_id=?',[id]);
-  await audit(db,req.user.id,'BAJA_LOGICA','empleados',id);
- });ok(res,{mensaje:'Empleado eliminado lógicamente'});
+
+router.patch('/affiliates/:id', role('ADMIN'), asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  const data = parse(z.object({
+    estatus: z.enum(['ACTIVO', 'PENALIZADO', 'BAJA']),
+    verificacion: z.enum(['PENDIENTE', 'VERIFICADO', 'RECHAZADO']),
+    documento_tipo: z.enum(['INE', 'PASAPORTE', 'OTRO']).nullable().optional(),
+  }).strict(), req.body);
+
+  await withTx(async (session) => {
+    const old = await collection('afiliados').findOne({ cuenta_id: id }, { session });
+    if (!old) fail(404, 'Afiliado no encontrado');
+    const loans = await collection('prestamos').find({
+      afiliado_id: id, devuelto_en: null,
+    }, { session }).toArray();
+    if (data.estatus === 'ACTIVO' && loans.some((loan) => loan.vence_en < new Date())) {
+      fail(409, 'El afiliado tiene préstamos vencidos; registra las devoluciones');
+    }
+    if (data.estatus === 'BAJA' && loans.length) {
+      fail(409, 'No puedes dar de baja un afiliado con préstamos activos');
+    }
+    const documentType = data.documento_tipo === undefined
+      ? old.documento_tipo
+      : data.documento_tipo;
+    if (data.verificacion === 'VERIFICADO' && !documentType) {
+      fail(422, 'Selecciona el documento de identidad presentado');
+    }
+
+    await collection('afiliados').updateOne({ cuenta_id: id }, {
+      $set: {
+        estatus: data.estatus,
+        verificacion: data.verificacion,
+        documento_tipo: documentType,
+        verificado_por: data.verificacion === 'VERIFICADO' ? req.user.id : null,
+        verificado_en: data.verificacion === 'VERIFICADO' ? new Date() : null,
+      },
+    }, { session });
+
+    if (data.estatus === 'BAJA') {
+      const reservations = await collection('reservaciones').find({
+        afiliado_id: id, estatus: 'ACTIVA',
+      }, { session }).toArray();
+      for (const reservation of reservations) {
+        await collection('reservaciones').updateOne(
+          { id: reservation.id, estatus: 'ACTIVA' },
+          { $set: { estatus: 'CANCELADA', terminada_en: new Date() } },
+          { session },
+        );
+        await collection('ejemplares').updateOne(
+          { id: reservation.ejemplar_id, estatus: 'RESERVADO' },
+          { $set: { estatus: 'DISPONIBLE' } },
+          { session },
+        );
+      }
+    }
+    await audit(session, req.user.id, 'ACTUALIZAR_ESTADO', 'afiliados', id, data);
+  });
+  ok(res, { mensaje: 'Afiliado actualizado' });
 }));
-router.get('/affiliates',role('ADMIN','BIBLIOTECARIO'),asyncRoute(async(req,res)=>{
- const q=String(req.query.q||'').trim();if(q.length>100)fail(422,'Búsqueda demasiado larga');
- const where=q?' AND (p.primer_nombre LIKE ? OR p.apellido_paterno LIKE ? OR c.email LIKE ?)':'';
- const args=q?[`%${q}%`,`%${q}%`,`%${q}%`]:[];
- ok(res,await queryRows(pool,`${baseAffiliates} WHERE c.eliminada_en IS NULL${where} ORDER BY c.id DESC LIMIT 200`,args));
-}));
-router.patch('/affiliates/:id',role('ADMIN'),asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);
- const data=parse(z.object({estatus:z.enum(['ACTIVO','PENALIZADO','BAJA']),verificacion:z.enum(['PENDIENTE','VERIFICADO','RECHAZADO']),documento_tipo:z.enum(['INE','PASAPORTE','OTRO']).nullable().optional()}),req.body);
- await withTx(async db=>{
-  const old=await queryOne(db,'SELECT * FROM afiliados WHERE cuenta_id=? FOR UPDATE',[id]);if(!old)fail(404,'Afiliado no encontrado');
-  const pending=await queryOne(db,'SELECT COUNT(*) AS total FROM prestamos WHERE afiliado_id=? AND devuelto_en IS NULL AND vence_en<NOW()',[id]);
-  if(data.estatus==='ACTIVO'&&pending.total)fail(409,'El afiliado tiene préstamos vencidos; primero registra sus devoluciones');
-  if(data.estatus==='BAJA'){
-   const active=await queryOne(db,'SELECT COUNT(*) AS total FROM prestamos WHERE afiliado_id=? AND devuelto_en IS NULL',[id]);
-   if(active.total)fail(409,'No se puede dar de baja a un afiliado con préstamos activos');
-  }
-  if(data.verificacion==='VERIFICADO'&&!data.documento_tipo&&!old.documento_tipo)fail(422,'Selecciona el documento de identidad presentado');
-  await db.execute('UPDATE afiliados SET estatus=?,verificacion=?,documento_tipo=?,verificado_por=?,verificado_en=? WHERE cuenta_id=?',[
-   data.estatus,data.verificacion,data.documento_tipo??null,data.verificacion==='VERIFICADO'?req.user.id:null,data.verificacion==='VERIFICADO'?new Date():null,id
-  ]);
-  if(data.estatus==='BAJA')await db.execute("UPDATE reservaciones r JOIN ejemplares e ON e.id=r.ejemplar_id SET r.estatus='CANCELADA',r.terminada_en=NOW(),e.estatus='DISPONIBLE' WHERE r.afiliado_id=? AND r.estatus='ACTIVA'",[id]);
-  await audit(db,req.user.id,'ACTUALIZAR_ESTADO','afiliados',id,data);
- });ok(res,{mensaje:'Afiliado actualizado'});
-}));
+
 export default router;

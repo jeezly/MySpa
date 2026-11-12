@@ -1,96 +1,823 @@
-import {useState,useEffect} from 'react';
-import {Link} from 'react-router-dom';
-import {Plus,Search,Edit3,Trash2,BookCopy,Users,UserRound,BookOpen,PackagePlus,ArrowRight,ShieldCheck,Camera,Archive,RefreshCcw,CheckCircle2,AlertTriangle,Info} from 'lucide-react';
-import {useAuth,useRemote} from '../hooks/useAuth.jsx';
-import {useToast,notify,SectionTitle,Spinner,Empty,ErrorState,Status,Modal,FormActions,BookArt,PhotoUpload,DateText} from '../components/ui.jsx';
-import {PersonFields,emptyPerson,personForForm,personPayload} from '../components/person.jsx';
-const emptyBook={titulo:'',anio_publicacion:new Date().getFullYear(),edicion:'Primera',isbn:'',genero_id:'',editorial_id:'',sinopsis:'',portada:null,autor_ids:[]};
+import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import {
+  Plus,
+  Search,
+  Edit3,
+  Trash2,
+  BookCopy,
+  Users,
+  UserRound,
+  BookOpen,
+  PackagePlus,
+  ArrowRight,
+  ShieldCheck,
+  Camera,
+  Archive,
+  RefreshCcw,
+  CheckCircle2,
+  AlertTriangle,
+  Info
+} from 'lucide-react';
+import { useAuth, useRemote } from '../hooks/useAuth.jsx';
+import { useToast, notify, SectionTitle, Spinner, Empty, ErrorState, Status, Modal, FormActions, BookArt, PhotoUpload, DateText } from '../components/ui.jsx';
+import { PersonFields, emptyPerson, personForForm, personPayload } from '../components/person.jsx';
+const emptyBook = {
+  titulo: '',
+  anio_publicacion: new Date().getFullYear(),
+  edicion: 'Primera',
+  isbn: '',
+  genero_id: '',
+  editorial_id: '',
+  sinopsis: '',
+  portada: null,
+  autor_ids: []
+};
 
-function CatalogEditor({bookId,reference,onClose,onSaved}){
- const {request}=useAuth(),toast=useToast(),[form,setForm]=useState({...emptyBook}),[loading,setLoading]=useState(!!bookId),[pending,setPending]=useState(false),[authors,setAuthors]=useState([]),[newGenre,setNewGenre]=useState(''),[newPublisher,setNewPublisher]=useState(''),[referenceData,setReferenceData]=useState(reference),[createdId,setCreatedId]=useState(bookId);
- const [copies,setCopies]=useState([]),[copyCount,setCopyCount]=useState(1);
- const refresh=async()=>{const r=await request(`/catalog/books/${createdId}`);setCopies(r.copies);setForm({...r,autor_ids:r.autor_ids});};
- useEffect(()=>{let active=true;Promise.all([request('/catalog/authors'),bookId?request(`/catalog/books/${bookId}`):Promise.resolve(null)]).then(([authors,book])=>{
-  if(!active)return;setAuthors(authors);if(book){setForm({...book,autor_ids:book.autor_ids});setCopies(book.copies)}}).catch(e=>notify(toast,e.message,'error')).finally(()=>active&&setLoading(false));return()=>{active=false}},[bookId,request]);
- const set=(k,v)=>setForm(prev=>({...prev,[k]:v}));
- const save=async e=>{e.preventDefault();setPending(true);try{
-  const data={titulo:form.titulo,anio_publicacion:Number(form.anio_publicacion),edicion:form.edicion,isbn:form.isbn,genero_id:Number(form.genero_id),editorial_id:Number(form.editorial_id),sinopsis:form.sinopsis||null,portada:form.portada||null,autor_ids:form.autor_ids.map(Number)};
-  const isEdit=!!createdId;const result=await request(`/catalog/books${isEdit?`/${createdId}`:''}`,{method:isEdit?'PATCH':'POST',body:data});
-  const id=createdId||result.id;setCreatedId(id);notify(toast,isEdit?'Libro actualizado':'Libro creado. Ahora puedes agregar ejemplares.');onSaved();if(isEdit)onClose();
- }catch(e){notify(toast,e.message,'error')}finally{setPending(false)}};
- const addRef=async(type,name)=>{if(!name.trim())return;try{const r=await request(`/catalog/reference/${type}`,{method:'POST',body:{nombre:name}});const refreshed=await request('/catalog/reference');setReferenceData(refreshed);set(type==='generos'?'genero_id':'editorial_id',r.id);type==='generos'?setNewGenre(''):setNewPublisher('');notify(toast,'Agregado al catálogo')}catch(e){notify(toast,e.message,'error')}};
- const addCopies=async()=>{try{await request(`/catalog/books/${createdId}/copies`,{method:'POST',body:{cantidad:Number(copyCount)}});notify(toast,'Ejemplares registrados');await refresh();onSaved()}catch(e){notify(toast,e.message,'error')}};
- const changeCopy=async(copy)=>{const next=copy.estatus==='BAJA'?'DISPONIBLE':'BAJA';if(!window.confirm(`${next==='BAJA'?'Dar de baja':'Reactivar'} el ejemplar ${copy.codigo}?`))return;
-  try{await request(`/catalog/copies/${copy.id}`,{method:'PATCH',body:{estatus:next}});await refresh();onSaved();notify(toast,'Ejemplar actualizado')}catch(e){notify(toast,e.message,'error')}};
- if(loading)return <Spinner/>;
- return <div className="editor-form"><form onSubmit={save}><div className="form-grid"><label className="field field-wide"><span>Título del libro *</span><input required minLength={2} maxLength={250} value={form.titulo} onChange={e=>set('titulo',e.target.value)}/></label><label className="field"><span>ISBN-13 *</span><input required placeholder="9786190000000" value={form.isbn} onChange={e=>set('isbn',e.target.value)} maxLength={17}/></label>
- <label className="field"><span>Año de publicación *</span><input required type="number" min="1450" max={new Date().getFullYear()+1} value={form.anio_publicacion} onChange={e=>set('anio_publicacion',e.target.value)}/></label><label className="field"><span>Edición *</span><input required value={form.edicion} onChange={e=>set('edicion',e.target.value)}/></label></div>
- <div className="form-grid"><label className="field"><span>Género *</span><select required value={form.genero_id} onChange={e=>set('genero_id',e.target.value)}><option value="">Seleccionar género</option>{referenceData?.generos?.map(g=><option key={g.id} value={g.id}>{g.nombre}</option>)}</select></label><label className="field"><span>Editorial *</span><select required value={form.editorial_id} onChange={e=>set('editorial_id',e.target.value)}><option value="">Seleccionar editorial</option>{referenceData?.editoriales?.map(g=><option key={g.id} value={g.id}>{g.nombre}</option>)}</select></label></div>
- <div className="form-grid ref-create"><label className="field"><span>Agregar nuevo género</span><div className="field-inline"><input placeholder="Nombre" value={newGenre} onChange={e=>setNewGenre(e.target.value)}/><button type="button" className="btn btn-outline btn-small" onClick={()=>addRef('generos',newGenre)}><Plus size={15}/></button></div></label><label className="field"><span>Agregar editorial</span><div className="field-inline"><input placeholder="Nombre" value={newPublisher} onChange={e=>setNewPublisher(e.target.value)}/><button type="button" className="btn btn-outline btn-small" onClick={()=>addRef('editoriales',newPublisher)}><Plus size={15}/></button></div></label></div>
- <label className="field"><span>Autor o autores * (selección múltiple)</span><div className="author-picker">{authors.length?authors.map(a=><label key={a.id} className={`author-checkbox ${form.autor_ids.map(Number).includes(Number(a.id))?'chosen':''}`}><input type="checkbox" checked={form.autor_ids.map(Number).includes(Number(a.id))} onChange={e=>set('autor_ids',e.target.checked?[...form.autor_ids,Number(a.id)]:form.autor_ids.filter(v=>Number(v)!==a.id))}/>{a.nombre}</label>):<span>No hay autores. Regístralos desde Gestión de autores.</span>}</div></label>
- <label className="field"><span>Sinopsis</span><textarea rows={3} maxLength={3000} value={form.sinopsis||''} onChange={e=>set('sinopsis',e.target.value)} placeholder="Describe brevemente la obra..."/></label>
- <div className="cover-picker">
-  <BookArt book={{...form,id:createdId||0,autores:authors.filter(a=>form.autor_ids.map(Number).includes(Number(a.id))).map(a=>a.nombre).join(', ')}}/>
-  <div className="cover-picker-info"><strong>Portada del libro</strong><p>Puedes usar la portada de esta edición según su ISBN (Open Library) o subir una imagen propia después de guardar el libro. Si Open Library no dispone de ella, se mostrará el diseño de respaldo.</p>
-   <div className="cover-picker-actions"><button type="button" className="btn btn-outline btn-small" onClick={()=>{
-    const isbn=String(form.isbn||'').replace(/[\s-]/g,'');
-    if(!/^\d{13}$/.test(isbn)){notify(toast,'Escribe primero un ISBN-13 válido','error');return;}
-    set('portada',`https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg?default=false`);
-   }}>Usar portada por ISBN</button>
-   {form.portada&&<button type="button" className="btn btn-quiet btn-small" onClick={()=>set('portada',null)}>Quitar portada</button>}</div>
-   {form.portada&&<small>Portada seleccionada: {form.portada.startsWith('/api/media/')?'imagen subida a MySpa':'Open Library (requiere Internet)'}</small>}
-  </div>
- </div>
- <FormActions pending={pending} submitText={createdId?'Guardar libro':'Crear libro'} cancel={onClose}/></form>
- {createdId&&<div className="editor-extra"><h3>Archivo de portada y ejemplares</h3><div className="extra-photo"><PhotoUpload tipo="LIBRO" id={createdId} onUpload={url=>{set('portada',url);onSaved()}}/><small>PNG, JPG o WebP. Máx. 2 MB.</small></div>
- <div className="copies-toolbar"><label className="field"><span>Ejemplares a agregar (1–30)</span><input type="number" min="1" max="30" value={copyCount} onChange={e=>setCopyCount(e.target.value)}/></label><button className="btn btn-primary" type="button" onClick={addCopies}><PackagePlus size={17}/> Registrar ejemplares</button></div>
- <div className="copy-list">{copies.map(c=><div className="copy-item" key={c.id}><code>{c.codigo}</code><Status value={c.estatus}/>{['DISPONIBLE','BAJA'].includes(c.estatus)&&<button className="text-btn" onClick={()=>changeCopy(c)}>{c.estatus==='BAJA'?'Reactivar':'Dar de baja'}</button>}</div>)}{!copies.length&&<p className="small-note">Registra al menos un ejemplar para que el libro esté disponible.</p>}</div></div>}
- </div>;
+function CatalogEditor({ bookId, reference, onClose, onSaved }) {
+  const { request } = useAuth(),
+    toast = useToast(),
+    [form, setForm] = useState({ ...emptyBook }),
+    [loading, setLoading] = useState(!!bookId),
+    [pending, setPending] = useState(false),
+    [authors, setAuthors] = useState([]),
+    [newGenre, setNewGenre] = useState(''),
+    [newPublisher, setNewPublisher] = useState(''),
+    [referenceData, setReferenceData] = useState(reference),
+    [createdId, setCreatedId] = useState(bookId);
+  const [copies, setCopies] = useState([]), [copyCount, setCopyCount] = useState(1);
+  const refresh = async () => {
+    const r = await request(`/catalog/books/${createdId}`);
+    setCopies(r.copies);
+    setForm({ ...r, autor_ids: r.autor_ids });
+  };
+  useEffect(() => {
+    let active = true;
+    Promise.all([request('/catalog/authors'), bookId ? request(`/catalog/books/${bookId}`) : Promise.resolve(null)]).then(([authors, book]) => {
+      if (!active) return;
+      setAuthors(authors);
+      if (book) {
+        setForm({ ...book, autor_ids: book.autor_ids });
+        setCopies(book.copies)
+      }
+    }).catch(e => notify(toast, e.message, 'error')).finally(() => active && setLoading(false));
+    return () => {
+      active = false
+    }
+  }, [bookId, request]);
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+  const save = async e => {
+    e.preventDefault();
+    setPending(true);
+    try {
+      const data = {
+        titulo: form.titulo,
+        anio_publicacion: Number(form.anio_publicacion),
+        edicion: form.edicion,
+        isbn: form.isbn,
+        genero_id: Number(form.genero_id),
+        editorial_id: Number(form.editorial_id),
+        sinopsis: form.sinopsis || null,
+        portada: form.portada || null,
+        autor_ids: form.autor_ids.map(Number)
+      };
+      const isEdit = !!createdId;
+      const result = await request(`/catalog/books${isEdit ? `/${createdId}` : ''}`, { method: isEdit ? 'PATCH' : 'POST', body: data });
+      const id = createdId || result.id;
+      setCreatedId(id);
+      notify(toast, isEdit ? 'Libro actualizado' : 'Libro creado. Ahora puedes agregar ejemplares.');
+      onSaved();
+      if (isEdit) onClose();
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    } finally {
+      setPending(false)
+    }
+  };
+  const addRef = async (type, name) => {
+    if (!name.trim()) return;
+    try {
+      const r = await request(`/catalog/reference/${type}`, { method: 'POST', body: { nombre: name } });
+      const refreshed = await request('/catalog/reference');
+      setReferenceData(refreshed);
+      set(type === 'generos' ? 'genero_id' : 'editorial_id', r.id);
+      type === 'generos' ? setNewGenre('') : setNewPublisher('');
+      notify(toast, 'Agregado al catálogo')
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  const addCopies = async () => {
+    try {
+      await request(`/catalog/books/${createdId}/copies`, { method: 'POST', body: { cantidad: Number(copyCount) } });
+      notify(toast, 'Ejemplares registrados');
+      await refresh();
+      onSaved()
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  const changeCopy = async (copy) => {
+    const next = copy.estatus === 'BAJA' ? 'DISPONIBLE' : 'BAJA';
+    if (!window.confirm(`${next === 'BAJA' ? 'Dar de baja' : 'Reactivar'} el ejemplar ${copy.codigo}?`)) return;
+    try {
+      await request(`/catalog/copies/${copy.id}`, { method: 'PATCH', body: { estatus: next } });
+      await refresh();
+      onSaved();
+      notify(toast, 'Ejemplar actualizado')
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  if (loading) return <Spinner />;
+  return <div className="editor-form">
+    <form onSubmit={save}>
+      <div className="form-grid">
+        <label className="field field-wide">
+          <span>Título del libro *</span>
+          <input required
+            minLength={2}
+            maxLength={250}
+            value={form.titulo}
+            onChange={e => set('titulo', e.target.value)} />
+        </label>
+        <label className="field">
+          <span>ISBN-13 *</span>
+          <input required
+            placeholder="9786190000000"
+            value={form.isbn}
+            onChange={e => set('isbn', e.target.value)}
+            maxLength={17} />
+        </label>
+        <label className="field">
+          <span>Año de publicación *</span>
+          <input required
+            type="number"
+            min="1450"
+            max={new Date().getFullYear() + 1}
+            value={form.anio_publicacion}
+            onChange={e => set('anio_publicacion', e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Edición *</span>
+          <input required value={form.edicion} onChange={e => set('edicion', e.target.value)} />
+        </label>
+      </div>
+      <div className="form-grid">
+        <label className="field">
+          <span>Género *</span>
+          <select required value={form.genero_id} onChange={e => set('genero_id', e.target.value)}>
+            <option value="">Seleccionar género</option>
+            {referenceData?.generos?.map(g => <option key={g.id} value={g.id}>
+              {g.nombre}
+            </option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Editorial *</span>
+          <select required value={form.editorial_id} onChange={e => set('editorial_id', e.target.value)}>
+            <option value="">Seleccionar editorial</option>
+            {referenceData?.editoriales?.map(g => <option key={g.id} value={g.id}>
+              {g.nombre}
+            </option>)}
+          </select>
+        </label>
+      </div>
+      <div className="form-grid ref-create">
+        <label className="field">
+          <span>Agregar nuevo género</span>
+          <div className="field-inline">
+            <input placeholder="Nombre" value={newGenre} onChange={e => setNewGenre(e.target.value)} />
+            <button type="button" className="btn btn-outline btn-small" onClick={() => addRef('generos', newGenre)}>
+              <Plus size={15} />
+            </button>
+          </div>
+        </label>
+        <label className="field">
+          <span>Agregar editorial</span>
+          <div className="field-inline">
+            <input placeholder="Nombre" value={newPublisher} onChange={e => setNewPublisher(e.target.value)} />
+            <button type="button" className="btn btn-outline btn-small" onClick={() => addRef('editoriales', newPublisher)}>
+              <Plus size={15} />
+            </button>
+          </div>
+        </label>
+      </div>
+      <label className="field">
+        <span>Autor o autores * (selección múltiple)</span>
+        <div className="author-picker">
+          {authors.length ?
+            authors.map(a => <label key={a.id} className={`author-checkbox ${form.autor_ids.map(Number).includes(Number(a.id)) ? 'chosen' : ''}`}>
+              <input type="checkbox" checked={form.autor_ids.map(Number).includes(Number(a.id))} onChange={e => set('autor_ids', e.target.checked ? [...form.autor_ids, Number(a.id)] : form.autor_ids.filter(v => Number(v) !== a.id))} />
+              {a.nombre}
+            </label>) :
+            <span>No hay autores. Regístralos desde Gestión de autores.</span>}
+        </div>
+      </label>
+      <label className="field">
+        <span>Sinopsis</span>
+        <textarea rows={3}
+          maxLength={3000}
+          value={form.sinopsis || ''}
+          onChange={e => set('sinopsis', e.target.value)}
+          placeholder="Describe brevemente la obra..." />
+      </label>
+      <div className="cover-picker">
+        <BookArt book={{
+          ...form,
+          id: createdId || 0,
+          autores: authors.filter(a => form.autor_ids.map(Number).includes(Number(a.id))).map(a => a.nombre).join(', ')
+        }} />
+        <div className="cover-picker-info">
+          <strong>Portada del libro</strong>
+          <p>Puedes usar la portada de esta edición según su ISBN (Open Library) o subir una imagen propia después de guardar el libro. Si Open Library no dispone de ella, se mostrará el diseño de respaldo.</p>
+          <div className="cover-picker-actions">
+            <button type="button"
+              className="btn btn-outline btn-small"
+              onClick={() => {
+                const isbn = String(form.isbn || '').replace(/[\s-]/g, '');
+                if (!/^\d{13}$/.test(isbn)) {
+                  notify(toast, 'Escribe primero un ISBN-13 válido', 'error');
+                  return;
+                }
+                set('portada', `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg?default=false`);
+              }}>Usar portada por ISBN</button>
+            {form.portada && <button type="button" className="btn btn-quiet btn-small" onClick={() => set('portada', null)}>Quitar portada</button>}
+          </div>
+          {form.portada && <small>Portada seleccionada: {form.portada.startsWith('/api/media/') ? 'imagen subida a MySpa' : 'Open Library (requiere Internet)'}</small>}
+        </div>
+      </div>
+      <FormActions pending={pending} submitText={createdId ? 'Guardar libro' : 'Crear libro'} cancel={onClose} />
+    </form>
+    {createdId && <div className="editor-extra">
+      <h3>Archivo de portada y ejemplares</h3>
+      <div className="extra-photo">
+        <PhotoUpload tipo="LIBRO" id={createdId} onUpload={url => {
+          set('portada', url);
+          onSaved()
+        }} />
+        <small>PNG, JPG o WebP. Máx. 2 MB.</small>
+      </div>
+      <div className="copies-toolbar">
+        <label className="field">
+          <span>Ejemplares a agregar (1–30)</span>
+          <input type="number" min="1" max="30" value={copyCount} onChange={e => setCopyCount(e.target.value)} />
+        </label>
+        <button className="btn btn-primary" type="button" onClick={addCopies}><PackagePlus size={17} /> Registrar ejemplares</button>
+      </div>
+      <div className="copy-list">
+        {copies.map(c => <div className="copy-item" key={c.id}>
+          <code>
+            {c.codigo}
+          </code>
+          <Status value={c.estatus} />
+          {['DISPONIBLE', 'BAJA'].includes(c.estatus) && <button className="text-btn" onClick={() => changeCopy(c)}>
+            {c.estatus === 'BAJA' ? 'Reactivar' : 'Dar de baja'}
+          </button>}
+        </div>)}
+        {!copies.length && <p className="small-note">Registra al menos un ejemplar para que el libro esté disponible.</p>}
+      </div>
+    </div>}
+  </div>;
 }
-export function ManageBooks(){const {request}=useAuth(),toast=useToast(),[q,setQ]=useState(''),[page,setPage]=useState(1),[tick,setTick]=useState(0),[selected,setSelected]=useState(undefined),[open,setOpen]=useState(false);
- const {data,loading,error}=useRemote(()=>request(`/catalog/books?q=${encodeURIComponent(q)}&page=${page}`),[request,q,page,tick]);
- const {data:reference}=useRemote(()=>request('/catalog/reference'),[request,tick]);
- const remove=async book=>{if(!window.confirm(`¿Dar de baja el libro "${book.titulo}"? Solo es posible si no tiene préstamos/reservas activos.`))return;try{await request(`/catalog/books/${book.id}`,{method:'DELETE'});notify(toast,'Libro dado de baja');setTick(x=>x+1)}catch(e){notify(toast,e.message,'error')}};
- return <><SectionTitle eyebrow="ADMINISTRACIÓN · COLECCIÓN" title="Gestión de libros" description="Organiza títulos, autores, editoriales y ejemplares." action={<button className="btn btn-primary" onClick={()=>{setSelected(null);setOpen(true)}}><Plus size={18}/> Nuevo libro</button>}/>
- <div className="card-panel"><div className="table-toolbar"><label className="search-control"><Search size={18}/><input placeholder="Buscar título, autor o ISBN..." value={q} onChange={e=>{setQ(e.target.value);setPage(1)}}/></label><span>{data?.total||0} títulos</span></div>
- {error&&<ErrorState message={error}/>} {loading?<Spinner/>:<div className="table-wrap"><table><thead><tr><th>Libro</th><th>Género</th><th>ISBN</th><th>Ejemplares</th><th>Disponibles</th><th>Acciones</th></tr></thead><tbody>{data?.books?.map(b=><tr key={b.id}><td><div className="table-book"><span className="table-thumb"><BookArt book={b} small/></span><span><strong>{b.titulo}</strong><small>{b.autores}</small></span></div></td><td>{b.genero}</td><td><code>{b.isbn}</code></td><td>{b.total}</td><td><Status value={b.disponibles?'DISPONIBLE':'RESERVADO'}/></td><td><div className="row-actions"><button className="icon-btn" title="Editar libro y ejemplares" onClick={()=>{setSelected(b.id);setOpen(true)}}><Edit3 size={17}/></button><button className="icon-btn danger" title="Dar de baja" onClick={()=>remove(b)}><Trash2 size={17}/></button></div></td></tr>)}</tbody></table>{!data?.books?.length&&<Empty title="Sin títulos encontrados"/>}</div>}
- <div className="table-pagination"><button disabled={page<=1} onClick={()=>setPage(x=>x-1)}>Anterior</button><span>{page} / {data?.pages||1}</span><button disabled={page>=data?.pages} onClick={()=>setPage(x=>x+1)}>Siguiente</button></div></div>
- {open&&<Modal title={selected?'Editar libro':'Nuevo libro'} subtitle="Datos bibliográficos y control de ejemplares" onClose={()=>setOpen(false)} wide><CatalogEditor bookId={selected} reference={reference} onClose={()=>setOpen(false)} onSaved={()=>setTick(x=>x+1)}/></Modal>}</>;
+export function ManageBooks() {
+  const { request } = useAuth(),
+    toast = useToast(),
+    [q, setQ] = useState(''),
+    [page, setPage] = useState(1),
+    [tick, setTick] = useState(0),
+    [selected, setSelected] = useState(undefined),
+    [open, setOpen] = useState(false);
+  const { data, loading, error } = useRemote(() => request(`/catalog/books?q=${encodeURIComponent(q)}&page=${page}`), [request, q, page, tick]);
+  const { data: reference } = useRemote(() => request('/catalog/reference'), [request, tick]);
+  const remove = async book => {
+    if (!window.confirm(`¿Dar de baja el libro "${book.titulo}"? Solo es posible si no tiene préstamos/reservas activos.`)) return;
+    try {
+      await request(`/catalog/books/${book.id}`, { method: 'DELETE' });
+      notify(toast, 'Libro dado de baja');
+      setTick(x => x + 1)
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  return <>
+    <SectionTitle eyebrow="ADMINISTRACIÓN · COLECCIÓN"
+      title="Gestión de libros"
+      description="Organiza títulos, autores, editoriales y ejemplares."
+      action={<button className="btn btn-primary" onClick={() => {
+        setSelected(null);
+        setOpen(true)
+      }}><Plus size={18} /> Nuevo libro</button>} />
+    <div className="card-panel">
+      <div className="table-toolbar">
+        <label className="search-control">
+          <Search size={18} />
+          <input placeholder="Buscar título, autor o ISBN..." value={q} onChange={e => {
+            setQ(e.target.value);
+            setPage(1)
+          }} />
+        </label>
+        <span>{data?.total || 0} títulos</span>
+      </div>
+      {error && <ErrorState message={error} />}
+      {loading ?
+        <Spinner /> :
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Libro</th>
+                <th>Género</th>
+                <th>ISBN</th>
+                <th>Ejemplares</th>
+                <th>Disponibles</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.books?.map(b => <tr key={b.id}>
+                <td>
+                  <div className="table-book">
+                    <span className="table-thumb">
+                      <BookArt book={b} small />
+                    </span>
+                    <span>
+                      <strong>
+                        {b.titulo}
+                      </strong>
+                      <small>
+                        {b.autores}
+                      </small>
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  {b.genero}
+                </td>
+                <td>
+                  <code>
+                    {b.isbn}
+                  </code>
+                </td>
+                <td>
+                  {b.total}
+                </td>
+                <td>
+                  <Status value={b.disponibles ? 'DISPONIBLE' : 'RESERVADO'} />
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="icon-btn" title="Editar libro y ejemplares" onClick={() => {
+                      setSelected(b.id);
+                      setOpen(true)
+                    }}>
+                      <Edit3 size={17} />
+                    </button>
+                    <button className="icon-btn danger" title="Dar de baja" onClick={() => remove(b)}>
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+          {!data?.books?.length && <Empty title="Sin títulos encontrados" />}
+        </div>}
+      <div className="table-pagination">
+        <button disabled={page <= 1} onClick={() => setPage(x => x - 1)}>Anterior</button>
+        <span>{page} / {data?.pages || 1}</span>
+        <button disabled={page >= data?.pages} onClick={() => setPage(x => x + 1)}>Siguiente</button>
+      </div>
+    </div>
+    {open && <Modal title={selected ? 'Editar libro' : 'Nuevo libro'}
+      subtitle="Datos bibliográficos y control de ejemplares"
+      onClose={() => setOpen(false)}
+      wide>
+      <CatalogEditor bookId={selected}
+        reference={reference}
+        onClose={() => setOpen(false)}
+        onSaved={() => setTick(x => x + 1)} />
+    </Modal>}
+  </>;
 }
-function AuthorEditor({entry,onSaved,onClose}){const {request}=useAuth(),toast=useToast(),[person,setPerson]=useState(personForForm(entry)),[biografia,setBio]=useState(entry?.biografia||''),[busy,setBusy]=useState(false);
- const save=async e=>{e.preventDefault();setBusy(true);try{await request(`/catalog/authors${entry?`/${entry.id}`:''}`,{method:entry?'PATCH':'POST',body:{...personPayload(person),biografia:biografia||null}});notify(toast,entry?'Autor actualizado':'Autor registrado');onSaved();onClose()}catch(e){notify(toast,e.message,'error')}finally{setBusy(false)}};
- return <form onSubmit={save}><PersonFields value={person} onChange={setPerson}/><label className="field"><span>Biografía</span><textarea rows={3} value={biografia} maxLength={3000} onChange={e=>setBio(e.target.value)}/></label>
- {entry&&<div className="photo-area"><PhotoUpload tipo="AUTOR" id={entry.id} onUpload={url=>{setPerson(p=>({...p,fotografia:url}));onSaved()}}/></div>}
- <FormActions pending={busy} submitText={entry?'Guardar autor':'Crear autor'} cancel={onClose}/></form>
+function AuthorEditor({ entry, onSaved, onClose }) {
+  const { request } = useAuth(),
+    toast = useToast(),
+    [person, setPerson] = useState(personForForm(entry)),
+    [biografia, setBio] = useState(entry?.biografia || ''),
+    [busy, setBusy] = useState(false);
+  const save = async e => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/catalog/authors${entry ? `/${entry.id}` : ''}`, { method: entry ? 'PATCH' : 'POST', body: { ...personPayload(person), biografia: biografia || null } });
+      notify(toast, entry ? 'Autor actualizado' : 'Autor registrado');
+      onSaved();
+      onClose()
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  };
+  return <form onSubmit={save}>
+    <PersonFields value={person} onChange={setPerson} />
+    <label className="field">
+      <span>Biografía</span>
+      <textarea rows={3} value={biografia} maxLength={3000} onChange={e => setBio(e.target.value)} />
+    </label>
+    {entry && <div className="photo-area">
+      <PhotoUpload tipo="AUTOR" id={entry.id} onUpload={url => {
+        setPerson(p => ({ ...p, fotografia: url }));
+        onSaved()
+      }} />
+    </div>}
+    <FormActions pending={busy} submitText={entry ? 'Guardar autor' : 'Crear autor'} cancel={onClose} />
+  </form>
 }
-export function ManageAuthors(){const {request}=useAuth(),toast=useToast(),[q,setQ]=useState(''),[tick,setTick]=useState(0),[editing,setEditing]=useState(null),[open,setOpen]=useState(false);
- const {data,loading,error}=useRemote(()=>request('/catalog/authors'),[request,tick]);const authors=data?.filter(x=>x.nombre.toLowerCase().includes(q.toLowerCase()))||[];
- const remove=async a=>{if(!window.confirm(`¿Dar de baja a ${a.nombre}? Solo si no tiene libros.`))return;try{await request(`/catalog/authors/${a.id}`,{method:'DELETE'});notify(toast,'Autor dado de baja');setTick(x=>x+1)}catch(e){notify(toast,e.message,'error')}};
- return <><SectionTitle eyebrow="ADMINISTRACIÓN · AUTORES" title="Autores" description="Directorio completo de escritores, biografías y contacto." action={<button className="btn btn-primary" onClick={()=>{setEditing(null);setOpen(true)}}><Plus size={18}/> Nuevo autor</button>}/>
- <div className="card-panel"><div className="table-toolbar"><label className="search-control"><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar autor..."/></label><span>{authors.length} autores</span></div>{error&&<ErrorState message={error}/>}{loading?<Spinner/>:<div className="table-wrap"><table><thead><tr><th>Autor</th><th>Email</th><th>Teléfono</th><th>Libros</th><th>Acciones</th></tr></thead><tbody>{authors.map(a=><tr key={a.id}><td><div className="person-cell"><span className="person-avatar">{a.fotografia?<img src={a.fotografia}/>:a.primer_nombre[0]}</span><div><strong>{a.nombre}</strong><small>{a.ciudad||'Sin ciudad'}</small></div></div></td><td>{a.email}</td><td>{a.telefono||'—'}</td><td>{a.libros}</td><td><div className="row-actions"><button className="icon-btn" onClick={()=>{setEditing(a);setOpen(true)}}><Edit3 size={17}/></button><button className="icon-btn danger" onClick={()=>remove(a)}><Trash2 size={17}/></button></div></td></tr>)}</tbody></table>{!authors.length&&<Empty/>}</div>}</div>
- {open&&<Modal title={editing?'Editar autor':'Registrar autor'} subtitle="Información personal y de contacto" onClose={()=>setOpen(false)} wide><AuthorEditor entry={editing} onClose={()=>setOpen(false)} onSaved={()=>setTick(x=>x+1)}/></Modal>}</>;
+export function ManageAuthors() {
+  const { request } = useAuth(),
+    toast = useToast(),
+    [q, setQ] = useState(''),
+    [tick, setTick] = useState(0),
+    [editing, setEditing] = useState(null),
+    [open, setOpen] = useState(false);
+  const { data, loading, error } = useRemote(() => request('/catalog/authors'), [request, tick]);
+  const authors = data?.filter(x => x.nombre.toLowerCase().includes(q.toLowerCase())) || [];
+  const remove = async a => {
+    if (!window.confirm(`¿Dar de baja a ${a.nombre}? Solo si no tiene libros.`)) return;
+    try {
+      await request(`/catalog/authors/${a.id}`, { method: 'DELETE' });
+      notify(toast, 'Autor dado de baja');
+      setTick(x => x + 1)
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  return <>
+    <SectionTitle eyebrow="ADMINISTRACIÓN · AUTORES"
+      title="Autores"
+      description="Directorio completo de escritores, biografías y contacto."
+      action={<button className="btn btn-primary" onClick={() => {
+        setEditing(null);
+        setOpen(true)
+      }}><Plus size={18} /> Nuevo autor</button>} />
+    <div className="card-panel">
+      <div className="table-toolbar">
+        <label className="search-control">
+          <Search size={18} />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar autor..." />
+        </label>
+        <span>{authors.length} autores</span>
+      </div>
+      {error && <ErrorState message={error} />}
+      {loading ?
+        <Spinner /> :
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Autor</th>
+                <th>Email</th>
+                <th>Teléfono</th>
+                <th>Libros</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {authors.map(a => <tr key={a.id}>
+                <td>
+                  <div className="person-cell">
+                    <span className="person-avatar">
+                      {a.fotografia ? <img src={a.fotografia} /> : a.primer_nombre[0]}
+                    </span>
+                    <div>
+                      <strong>
+                        {a.nombre}
+                      </strong>
+                      <small>
+                        {a.ciudad || 'Sin ciudad'}
+                      </small>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  {a.email}
+                </td>
+                <td>
+                  {a.telefono || '—'}
+                </td>
+                <td>
+                  {a.libros}
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="icon-btn" onClick={() => {
+                      setEditing(a);
+                      setOpen(true)
+                    }}>
+                      <Edit3 size={17} />
+                    </button>
+                    <button className="icon-btn danger" onClick={() => remove(a)}>
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+          {!authors.length && <Empty />}
+        </div>}
+    </div>
+    {open && <Modal title={editing ? 'Editar autor' : 'Registrar autor'}
+      subtitle="Información personal y de contacto"
+      onClose={() => setOpen(false)}
+      wide>
+      <AuthorEditor entry={editing} onClose={() => setOpen(false)} onSaved={() => setTick(x => x + 1)} />
+    </Modal>}
+  </>;
 }
-function EmployeeEditor({entry,onSaved,onClose}){const {request}=useAuth(),toast=useToast(),[person,setPerson]=useState(personForForm(entry)),[role,setRole]=useState(entry?.rol||'BIBLIOTECARIO'),[password,setPassword]=useState(''),[busy,setBusy]=useState(false);
- const save=async e=>{e.preventDefault();setBusy(true);try{const body={...personPayload(person),rol:role};if(password)body.password=password;
-  await request(`/people/staff${entry?`/${entry.cuenta_id}`:''}`,{method:entry?'PATCH':'POST',body});notify(toast,entry?'Empleado actualizado':'Empleado registrado');onSaved();onClose()}catch(e){notify(toast,e.message,'error')}finally{setBusy(false)}};
- return <form onSubmit={save}><PersonFields value={person} onChange={setPerson}/><div className="form-grid"><label className="field"><span>Rol del empleado *</span><select value={role} onChange={e=>setRole(e.target.value)}><option value="BIBLIOTECARIO">Bibliotecario</option><option value="ADMIN">Administrador</option></select></label><label className="field"><span>{entry?'Nueva contraseña (opcional)':'Contraseña inicial *'}</span><input type="password" autoComplete="new-password" minLength={10} required={!entry} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Mín. 10, mayúscula, minúscula y número"/></label></div>
- {entry&&<div className="photo-area"><PhotoUpload tipo="PERFIL" id={entry.cuenta_id} onUpload={url=>{setPerson(p=>({...p,fotografia:url}));onSaved()}}/></div>}<FormActions pending={busy} submitText={entry?'Guardar empleado':'Crear empleado'} cancel={onClose}/></form>
+function EmployeeEditor({ entry, onSaved, onClose }) {
+  const { request } = useAuth(),
+    toast = useToast(),
+    [person, setPerson] = useState(personForForm(entry)),
+    [role, setRole] = useState(entry?.rol || 'BIBLIOTECARIO'),
+    [password, setPassword] = useState(''),
+    [busy, setBusy] = useState(false);
+  const save = async e => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const body = { ...personPayload(person), rol: role };
+      if (password) body.password = password;
+      await request(`/people/staff${entry ? `/${entry.cuenta_id}` : ''}`, { method: entry ? 'PATCH' : 'POST', body });
+      notify(toast, entry ? 'Empleado actualizado' : 'Empleado registrado');
+      onSaved();
+      onClose()
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  };
+  return <form onSubmit={save}>
+    <PersonFields value={person} onChange={setPerson} />
+    <div className="form-grid">
+      <label className="field">
+        <span>Rol del empleado *</span>
+        <select value={role} onChange={e => setRole(e.target.value)}>
+          <option value="BIBLIOTECARIO">Bibliotecario</option>
+          <option value="ADMIN">Administrador</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>
+          {entry ? 'Nueva contraseña (opcional)' : 'Contraseña inicial *'}
+        </span>
+        <input type="password"
+          autoComplete="new-password"
+          minLength={10}
+          required={!entry}
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          placeholder="Mín. 10, mayúscula, minúscula y número" />
+      </label>
+    </div>
+    {entry && <div className="photo-area">
+      <PhotoUpload tipo="PERFIL" id={entry.cuenta_id} onUpload={url => {
+        setPerson(p => ({ ...p, fotografia: url }));
+        onSaved()
+      }} />
+    </div>}
+    <FormActions pending={busy} submitText={entry ? 'Guardar empleado' : 'Crear empleado'} cancel={onClose} />
+  </form>
 }
-export function ManageStaff(){const {request,user}=useAuth(),toast=useToast(),[tick,setTick]=useState(0),[editing,setEditing]=useState(null),[open,setOpen]=useState(false);
- const {data,loading,error}=useRemote(()=>request('/people/staff'),[request,tick]);
- const remove=async u=>{if(!window.confirm(`¿Dar de baja a ${u.nombre}? Se conservará su historial.`))return;try{await request(`/people/staff/${u.cuenta_id}`,{method:'DELETE'});notify(toast,'Empleado dado de baja lógicamente');setTick(x=>x+1)}catch(e){notify(toast,e.message,'error')}};
- return <><SectionTitle eyebrow="ADMINISTRACIÓN · EQUIPO" title="Personal de la biblioteca" description="Gestiona empleados y permisos por rol." action={<button className="btn btn-primary" onClick={()=>{setEditing(null);setOpen(true)}}><Plus size={18}/> Nuevo empleado</button>}/>
- <div className="card-panel">{error&&<ErrorState message={error}/>} {loading?<Spinner/>:<div className="table-wrap"><table><thead><tr><th>Empleado</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{data?.map(u=><tr key={u.cuenta_id}><td><div className="person-cell"><span className="person-avatar">{u.fotografia?<img src={u.fotografia}/>:u.primer_nombre[0]}</span><div><strong>{u.nombre}</strong><small>{u.telefono||'Sin teléfono'}</small></div></div></td><td>{u.email}</td><td><span className="role-table">{u.rol==='ADMIN'?'Administrador':'Bibliotecario'}</span></td><td><Status value={u.habilitada?'ACTIVO':'BAJA'}/></td><td><div className="row-actions"><button className="icon-btn" title="Editar" onClick={()=>{setEditing(u);setOpen(true)}}><Edit3 size={17}/></button>{u.cuenta_id!==user.id&&<button className="icon-btn danger" title="Baja lógica" onClick={()=>remove(u)}><Trash2 size={17}/></button>}</div></td></tr>)}</tbody></table></div>}</div>
- {open&&<Modal title={editing?'Editar empleado':'Nuevo empleado'} subtitle="Roles y datos de acceso" wide onClose={()=>setOpen(false)}><EmployeeEditor entry={editing} onClose={()=>setOpen(false)} onSaved={()=>setTick(x=>x+1)}/></Modal>}</>;
+export function ManageStaff() {
+  const { request, user } = useAuth(), toast = useToast(), [tick, setTick] = useState(0), [editing, setEditing] = useState(null), [open, setOpen] = useState(false);
+  const { data, loading, error } = useRemote(() => request('/people/staff'), [request, tick]);
+  const remove = async u => {
+    if (!window.confirm(`¿Dar de baja a ${u.nombre}? Se conservará su historial.`)) return;
+    try {
+      await request(`/people/staff/${u.cuenta_id}`, { method: 'DELETE' });
+      notify(toast, 'Empleado dado de baja lógicamente');
+      setTick(x => x + 1)
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    }
+  };
+  return <>
+    <SectionTitle eyebrow="ADMINISTRACIÓN · EQUIPO"
+      title="Personal de la biblioteca"
+      description="Gestiona empleados y permisos por rol."
+      action={<button className="btn btn-primary" onClick={() => {
+        setEditing(null);
+        setOpen(true)
+      }}><Plus size={18} /> Nuevo empleado</button>} />
+    <div className="card-panel">
+      {error && <ErrorState message={error} />}
+      {loading ?
+        <Spinner /> :
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                <th>Correo</th>
+                <th>Rol</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.map(u => <tr key={u.cuenta_id}>
+                <td>
+                  <div className="person-cell">
+                    <span className="person-avatar">
+                      {u.fotografia ? <img src={u.fotografia} /> : u.primer_nombre[0]}
+                    </span>
+                    <div>
+                      <strong>
+                        {u.nombre}
+                      </strong>
+                      <small>
+                        {u.telefono || 'Sin teléfono'}
+                      </small>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  {u.email}
+                </td>
+                <td>
+                  <span className="role-table">
+                    {u.rol === 'ADMIN' ? 'Administrador' : 'Bibliotecario'}
+                  </span>
+                </td>
+                <td>
+                  <Status value={u.habilitada ? 'ACTIVO' : 'BAJA'} />
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="icon-btn" title="Editar" onClick={() => {
+                      setEditing(u);
+                      setOpen(true)
+                    }}>
+                      <Edit3 size={17} />
+                    </button>
+                    {u.cuenta_id !== user.id && <button className="icon-btn danger" title="Baja lógica" onClick={() => remove(u)}>
+                      <Trash2 size={17} />
+                    </button>}
+                  </div>
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+    </div>
+    {open && <Modal title={editing ? 'Editar empleado' : 'Nuevo empleado'}
+      subtitle="Roles y datos de acceso"
+      wide
+      onClose={() => setOpen(false)}>
+      <EmployeeEditor entry={editing} onClose={() => setOpen(false)} onSaved={() => setTick(x => x + 1)} />
+    </Modal>}
+  </>;
 }
-export function ManageAffiliates(){const {request,user}=useAuth(),toast=useToast(),[q,setQ]=useState(''),[tick,setTick]=useState(0),[selected,setSelected]=useState(null),[status,setStatus]=useState('ACTIVO'),[verification,setVerification]=useState('PENDIENTE'),[doc,setDoc]=useState(''),[busy,setBusy]=useState(false);
- const {data,loading,error}=useRemote(()=>request(`/people/affiliates?q=${encodeURIComponent(q)}`),[request,q,tick]);
- const open=a=>{setSelected(a);setStatus(a.estatus);setVerification(a.verificacion);setDoc(a.documento_tipo||'')};
- const save=async e=>{e.preventDefault();setBusy(true);try{await request(`/people/affiliates/${selected.cuenta_id}`,{method:'PATCH',body:{estatus:status,verificacion:verification,documento_tipo:doc||null}});notify(toast,'Estado de afiliado actualizado');setSelected(null);setTick(x=>x+1)}catch(e){notify(toast,e.message,'error')}finally{setBusy(false)}};
- return <><SectionTitle eyebrow="ADMINISTRACIÓN · COMUNIDAD" title="Afiliados" description="Consulta datos, revisa identificaciones y controla el estatus de cada lector."/>
- <div className="card-panel"><div className="table-toolbar"><label className="search-control"><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar por nombre o correo..."/></label><span>{data?.length||0} resultados</span></div>{error&&<ErrorState message={error}/>} {loading?<Spinner/>:<div className="table-wrap"><table><thead><tr><th>Afiliado</th><th>Verificación</th><th>Estado</th><th>Préstamos</th><th>Acción</th></tr></thead><tbody>{data?.map(a=><tr key={a.cuenta_id}><td><div className="person-cell"><span className="person-avatar">{a.fotografia?<img src={a.fotografia}/>:a.primer_nombre[0]}</span><div><strong>{a.nombre}</strong><small>{a.email}</small></div></div></td><td><Status value={a.verificacion}/></td><td><Status value={a.estatus}/></td><td>{a.prestamos_activos}/5</td><td>{user.rol==='ADMIN'?<button className="btn btn-outline btn-small" onClick={()=>open(a)}><Edit3 size={15}/> Gestionar</button>:<span className="small-note">Solo lectura</span>}</td></tr>)}</tbody></table>{!data?.length&&<Empty title="No hay afiliados"/>}</div>}</div>
- {selected&&<Modal title={`Afiliado: ${selected.nombre}`} subtitle={selected.email} onClose={()=>setSelected(null)}><form onSubmit={save} className="stack-form"><div className="affiliate-summary"><div><span>Registrado</span><strong><DateText value={selected.fecha_registro} short/></strong></div><div><span>Préstamos activos</span><strong>{selected.prestamos_activos} de 5</strong></div></div>
- <div className="alert alert-warn"><ShieldCheck size={19}/> Verifica físicamente la identificación. No hace falta almacenar una copia del documento.</div><label className="field"><span>Verificación</span><select value={verification} onChange={e=>setVerification(e.target.value)}><option value="PENDIENTE">Pendiente</option><option value="VERIFICADO">Verificado</option><option value="RECHAZADO">Rechazado</option></select></label>
- <label className="field"><span>Documento presentado</span><select value={doc} onChange={e=>setDoc(e.target.value)}><option value="">Seleccionar</option><option value="INE">INE</option><option value="PASAPORTE">Pasaporte</option><option value="OTRO">Otro</option></select></label>
- <label className="field"><span>Estado del afiliado</span><select value={status} onChange={e=>setStatus(e.target.value)}><option value="ACTIVO">Activo</option><option value="PENALIZADO">Penalizado</option><option value="BAJA">Baja</option></select></label><FormActions pending={busy} cancel={()=>setSelected(null)} submitText="Guardar estado"/></form></Modal>}</>;
+export function ManageAffiliates() {
+  const { request, user } = useAuth(),
+    toast = useToast(),
+    [q, setQ] = useState(''),
+    [tick, setTick] = useState(0),
+    [selected, setSelected] = useState(null),
+    [status, setStatus] = useState('ACTIVO'),
+    [verification, setVerification] = useState('PENDIENTE'),
+    [doc, setDoc] = useState(''),
+    [busy, setBusy] = useState(false);
+  const { data, loading, error } = useRemote(() => request(`/people/affiliates?q=${encodeURIComponent(q)}`), [request, q, tick]);
+  const open = a => {
+    setSelected(a);
+    setStatus(a.estatus);
+    setVerification(a.verificacion);
+    setDoc(a.documento_tipo || '')
+  };
+  const save = async e => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/people/affiliates/${selected.cuenta_id}`, {
+        method: 'PATCH', body: {
+          estatus: status,
+          verificacion: verification,
+          documento_tipo: doc || null
+        }
+      });
+      notify(toast, 'Estado de afiliado actualizado');
+      setSelected(null);
+      setTick(x => x + 1)
+    } catch (e) {
+      notify(toast, e.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  };
+  return <>
+    <SectionTitle eyebrow="ADMINISTRACIÓN · COMUNIDAD" title="Afiliados" description="Consulta datos, revisa identificaciones y controla el estatus de cada lector." />
+    <div className="card-panel">
+      <div className="table-toolbar">
+        <label className="search-control">
+          <Search size={18} />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nombre o correo..." />
+        </label>
+        <span>{data?.length || 0} resultados</span>
+      </div>
+      {error && <ErrorState message={error} />}
+      {loading ?
+        <Spinner /> :
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Afiliado</th>
+                <th>Verificación</th>
+                <th>Estado</th>
+                <th>Préstamos</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.map(a => <tr key={a.cuenta_id}>
+                <td>
+                  <div className="person-cell">
+                    <span className="person-avatar">
+                      {a.fotografia ? <img src={a.fotografia} /> : a.primer_nombre[0]}
+                    </span>
+                    <div>
+                      <strong>
+                        {a.nombre}
+                      </strong>
+                      <small>
+                        {a.email}
+                      </small>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <Status value={a.verificacion} />
+                </td>
+                <td>
+                  <Status value={a.estatus} />
+                </td>
+                <td>{a.prestamos_activos}/5</td>
+                <td>
+                  {user.rol === 'ADMIN' ? <button className="btn btn-outline btn-small" onClick={() => open(a)}><Edit3 size={15} /> Gestionar</button> : <span className="small-note">Solo lectura</span>}
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+          {!data?.length && <Empty title="No hay afiliados" />}
+        </div>}
+    </div>
+    {selected && <Modal title={`Afiliado: ${selected.nombre}`} subtitle={selected.email} onClose={() => setSelected(null)}>
+      <form onSubmit={save} className="stack-form">
+        <div className="affiliate-summary">
+          <div>
+            <span>Registrado</span>
+            <strong>
+              <DateText value={selected.fecha_registro} short />
+            </strong>
+          </div>
+          <div>
+            <span>Préstamos activos</span>
+            <strong>{selected.prestamos_activos} de 5</strong>
+          </div>
+        </div>
+        <div className="alert alert-warn"><ShieldCheck size={19} /> Verifica físicamente la identificación. No hace falta almacenar una copia del documento.</div>
+        <label className="field">
+          <span>Verificación</span>
+          <select value={verification} onChange={e => setVerification(e.target.value)}>
+            <option value="PENDIENTE">Pendiente</option>
+            <option value="VERIFICADO">Verificado</option>
+            <option value="RECHAZADO">Rechazado</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Documento presentado</span>
+          <select value={doc} onChange={e => setDoc(e.target.value)}>
+            <option value="">Seleccionar</option>
+            <option value="INE">INE</option>
+            <option value="PASAPORTE">Pasaporte</option>
+            <option value="OTRO">Otro</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Estado del afiliado</span>
+          <select value={status} onChange={e => setStatus(e.target.value)}>
+            <option value="ACTIVO">Activo</option>
+            <option value="PENALIZADO">Penalizado</option>
+            <option value="BAJA">Baja</option>
+          </select>
+        </label>
+        <FormActions pending={busy} cancel={() => setSelected(null)} submitText="Guardar estado" />
+      </form>
+    </Modal>}
+  </>;
 }

@@ -1,22 +1,21 @@
 {
   "name": "myspa-biblioteca",
   "private": true,
-  "version": "1.0.0",
-  "description": "MySpa: sistema bibliotecario PWA",
+  "version": "2.0.0",
+  "description": "MySpa: sistema bibliotecario PWA con MongoDB Atlas",
   "workspaces": ["server", "client"],
   "scripts": {
-    "setup": "node scripts/setup.mjs",
     "seed": "node scripts/seed.mjs",
-    "catalogo": "node scripts/ampliar-catalogo.mjs",
-    "catalogo:revisar": "node scripts/ampliar-catalogo.mjs --dry-run",
+    "seed:check": "node scripts/seed.mjs --check",
     "dev": "concurrently -k -n API,REACT -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "start": "npm run start -w server",
     "build": "npm run build -w client",
-    "pwa": "npm run build && node scripts/serve.mjs",
-    "smoke": "node scripts/smoke.mjs",
-    "test": "node --test",
-    "check": "npm run test && npm run build"
+    "pwa": "npm run build && node scripts/serve.mjs"
   },
-  "devDependencies": {"concurrently": "^9.2.1"},
-  "engines": {"node": ">=20.19.0"}
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
 }

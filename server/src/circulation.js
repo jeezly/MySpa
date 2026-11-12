@@ -1,135 +1,360 @@
-import {Router} from 'express';
-import {z} from 'zod';
-import {pool,withTx,asyncRoute,queryOne,queryRows,fail,ok,parse,requireId,eligible,audit,refreshStatuses} from './core.js';
-import {requireAuth,role} from './auth.js';
+import { Router } from 'express';
 import nodemailer from 'nodemailer';
-const router=Router();
-const staff=(...x)=>role('ADMIN','BIBLIOTECARIO');
-const loanDetails=`SELECT pr.id,pr.afiliado_id,pr.ejemplar_id,pr.reservacion_id,pr.prestado_por,pr.devuelto_por,
- pr.inicio_en,pr.vence_en,pr.devuelto_en,l.titulo,e.codigo,
- CONCAT_WS(' ',p.primer_nombre,p.segundo_nombre,p.apellido_paterno) AS afiliado,
- CASE WHEN pr.devuelto_en IS NOT NULL THEN 'DEVUELTO' WHEN pr.vence_en<NOW() THEN 'VENCIDO' ELSE 'ACTIVO' END AS estatus
- FROM prestamos pr JOIN ejemplares e ON e.id=pr.ejemplar_id JOIN libros l ON l.id=e.libro_id
- JOIN cuentas c ON c.id=pr.afiliado_id JOIN personas p ON p.id=c.persona_id`;
-const resDetails=`SELECT r.id,r.afiliado_id,r.ejemplar_id,r.estatus,r.creada_en,r.vence_en,r.terminada_en,l.titulo,e.codigo,
- CONCAT_WS(' ',p.primer_nombre,p.segundo_nombre,p.apellido_paterno) AS afiliado
- FROM reservaciones r JOIN ejemplares e ON e.id=r.ejemplar_id JOIN libros l ON l.id=e.libro_id
- JOIN cuentas c ON c.id=r.afiliado_id JOIN personas p ON p.id=c.persona_id`;
+import { z } from 'zod';
+import { collection, nextId } from './db.js';
+import {
+  asyncRoute, audit, eligible, fail, fullName, inDays, inHours,
+  ok, parse, plain, refreshStatuses, requireId, withTx,
+} from './core.js';
+import { requireAuth, role } from './auth.js';
 
-async function notifyReservation(email,title,until){
- if(!process.env.SMTP_HOST||!process.env.SMTP_USER||!process.env.SMTP_PASS)return;
- try{
-  const transport=nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:Number(process.env.SMTP_PORT)===465,
-   auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS}});
-  await transport.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:email,
-   subject:'MySpa | Reservación confirmada',text:`Tu reservación de "${title}" está confirmada. Vence: ${new Date(until).toLocaleString('es-MX',{timeZone:'America/Mexico_City'})}. Preséntate en la biblioteca antes de esa fecha.`});
- }catch(e){console.error('[EMAIL] No se pudo enviar confirmación:',e.message);}
+const router = Router();
+const staff = role('ADMIN', 'BIBLIOTECARIO');
+const positiveId = z.coerce.number().int().positive();
+
+async function details(record, kind) {
+  const copy = await collection('ejemplares').findOne({ id: record.ejemplar_id });
+  const book = copy && await collection('libros').findOne({ id: copy.libro_id });
+  const account = await collection('cuentas').findOne({ id: record.afiliado_id });
+  const person = account && await collection('personas').findOne({ id: account.persona_id });
+  if (!copy || !book || !person) return null;
+
+  if (kind === 'loan') {
+    return {
+      ...plain(record),
+      titulo: book.titulo,
+      codigo: copy.codigo,
+      afiliado: fullName(person),
+      estatus: record.devuelto_en
+        ? 'DEVUELTO'
+        : record.vence_en < new Date() ? 'VENCIDO' : 'ACTIVO',
+    };
+  }
+  return {
+    ...plain(record),
+    titulo: book.titulo,
+    codigo: copy.codigo,
+    afiliado: fullName(person),
+  };
 }
-router.get('/reservations',requireAuth,asyncRoute(async(req,res)=>{
- await refreshStatuses();
- const staffUser=req.user.rol!=='AFILIADO';
- const rows=await queryRows(pool,`${resDetails} ${staffUser?'':'WHERE r.afiliado_id=?'} ORDER BY r.creada_en DESC LIMIT 250`,staffUser?[]:[req.user.id]);ok(res,rows);
-}));
-router.post('/reservations',role('AFILIADO'),asyncRoute(async(req,res)=>{
- const {libro_id}=parse(z.object({libro_id:z.coerce.number().int().positive()}),req.body);
- await refreshStatuses();
- const data=await withTx(async db=>{
-  await eligible(db,req.user.id);
-  const title=await queryOne(db,'SELECT id,titulo FROM libros WHERE id=? AND activo=1',[libro_id]);if(!title)fail(404,'Libro no encontrado');
-  const existing=await queryOne(db,`SELECT r.id FROM reservaciones r JOIN ejemplares e ON e.id=r.ejemplar_id
-   WHERE r.afiliado_id=? AND e.libro_id=? AND r.estatus='ACTIVA' AND r.vence_en>NOW() LIMIT 1`,[req.user.id,libro_id]);
-  if(existing)fail(409,'Ya tienes una reservación activa para este título');
-  const copy=await queryOne(db,"SELECT id FROM ejemplares WHERE libro_id=? AND estatus='DISPONIBLE' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",[libro_id]);
-  if(!copy)fail(409,'No hay ejemplares disponibles para reservar');
-  await db.execute("UPDATE ejemplares SET estatus='RESERVADO' WHERE id=?",[copy.id]);
-  const [r]=await db.execute("INSERT INTO reservaciones (afiliado_id,ejemplar_id,vence_en) VALUES (?,?,DATE_ADD(NOW(),INTERVAL 24 HOUR))",[req.user.id,copy.id]);
-  const saved=await queryOne(db,'SELECT vence_en FROM reservaciones WHERE id=?',[r.insertId]);
-  await audit(db,req.user.id,'RESERVAR','reservaciones',r.insertId,{libro_id,ejemplar_id:copy.id});
-  return {id:r.insertId,titulo:title.titulo,vence_en:saved.vence_en};
- });
- const email=await queryOne(pool,'SELECT email FROM cuentas WHERE id=?',[req.user.id]);
- // Correo opcional: no bloquear la reservación si SMTP falla.
- void notifyReservation(email.email,data.titulo,data.vence_en);
- ok(res,data,201);
-}));
-router.post('/reservations/:id/cancel',requireAuth,asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);
- await withTx(async db=>{
-  const r=await queryOne(db,'SELECT * FROM reservaciones WHERE id=? FOR UPDATE',[id]);if(!r)fail(404,'Reservación no encontrada');
-  if(req.user.rol==='AFILIADO'&&r.afiliado_id!==req.user.id)fail(403,'No puedes cancelar una reservación ajena');
-  if(r.estatus!=='ACTIVA'||new Date(r.vence_en)<=new Date())fail(409,'Esta reservación ya no está activa');
-  await db.execute("UPDATE reservaciones SET estatus='CANCELADA',terminada_en=NOW() WHERE id=?",[id]);
-  await db.execute("UPDATE ejemplares SET estatus='DISPONIBLE' WHERE id=? AND estatus='RESERVADO'",[r.ejemplar_id]);
-  await audit(db,req.user.id,'CANCELAR','reservaciones',id);
- });ok(res,{mensaje:'Reservación cancelada'});
-}));
-router.get('/loans',requireAuth,asyncRoute(async(req,res)=>{
- await refreshStatuses();
- const staffUser=req.user.rol!=='AFILIADO';
- const rows=await queryRows(pool,`${loanDetails} ${staffUser?'':'WHERE pr.afiliado_id=?'} ORDER BY pr.inicio_en DESC LIMIT 400`,staffUser?[]:[req.user.id]);ok(res,rows);
-}));
-async function createLoan(db,operator,affiliateId,copyId,reservationId){
- await eligible(db,affiliateId);
- const {total}=await queryOne(db,'SELECT COUNT(*) AS total FROM prestamos WHERE afiliado_id=? AND devuelto_en IS NULL',[affiliateId]);
- if(total>=5)fail(409,'Un afiliado solo puede tener 5 préstamos activos');
- const cp=await queryOne(db,'SELECT e.*,l.activo FROM ejemplares e JOIN libros l ON l.id=e.libro_id WHERE e.id=? FOR UPDATE',[copyId]);
- if(!cp||!cp.activo)fail(404,'Ejemplar no encontrado o libro inactivo');
- if(reservationId){
-  const resv=await queryOne(db,'SELECT * FROM reservaciones WHERE id=? FOR UPDATE',[reservationId]);
-  if(!resv||resv.afiliado_id!==affiliateId||resv.ejemplar_id!==copyId||resv.estatus!=='ACTIVA'||new Date(resv.vence_en)<=new Date())fail(409,'La reservación no está vigente o no corresponde al afiliado y ejemplar');
-  if(cp.estatus!=='RESERVADO')fail(409,'El ejemplar no está reservado');
-  await db.execute("UPDATE reservaciones SET estatus='CUMPLIDA',terminada_en=NOW() WHERE id=?",[reservationId]);
- }else if(cp.estatus!=='DISPONIBLE')fail(409,'El ejemplar no está disponible para préstamo directo');
- const [created]=await db.execute('INSERT INTO prestamos (afiliado_id,ejemplar_id,reservacion_id,prestado_por,vence_en) VALUES (?,?,?,?,DATE_ADD(NOW(),INTERVAL 7 DAY))',
-  [affiliateId,copyId,reservationId||null,operator]);
- await db.execute("UPDATE ejemplares SET estatus='PRESTADO' WHERE id=?",[copyId]);
- await audit(db,operator,'PRESTAR','prestamos',created.insertId,{afiliado_id:affiliateId,ejemplar_id:copyId,reservacion_id:reservationId||null});
- const record=await queryOne(db,'SELECT * FROM prestamos WHERE id=?',[created.insertId]);return record;
+
+async function notifyReservation(email, title, until) {
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) return;
+  try {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: Number(process.env.SMTP_PORT || 587) === 465,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: 'MySpa | Reservación confirmada',
+      text: `Tu reservación de "${title}" está confirmada. Vence: ${new Date(until).toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}.`,
+    });
+  } catch (error) {
+    console.error('[EMAIL]', error.message);
+  }
 }
-router.post('/loans',staff(),asyncRoute(async(req,res)=>{
- const data=parse(z.object({afiliado_id:z.coerce.number().int().positive(),ejemplar_id:z.coerce.number().int().positive(),reservacion_id:z.coerce.number().int().positive().nullable().optional()}),req.body);
- await refreshStatuses();
- const loan=await withTx(db=>createLoan(db,req.user.id,data.afiliado_id,data.ejemplar_id,data.reservacion_id||null));ok(res,loan,201);
+
+router.get('/reservations', requireAuth, asyncRoute(async (req, res) => {
+  await refreshStatuses();
+  const filter = req.user.rol === 'AFILIADO'
+    ? { afiliado_id: req.user.id }
+    : {};
+  const reservations = await collection('reservaciones').find(filter)
+    .sort({ creada_en: -1 }).limit(250).toArray();
+  const items = (await Promise.all(reservations.map(
+    (item) => details(item, 'reservation'),
+  ))).filter(Boolean);
+  ok(res, items);
 }));
-router.post('/reservations/:id/fulfill',staff(),asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);await refreshStatuses();
- const loan=await withTx(async db=>{
-  const reservation=await queryOne(db,'SELECT * FROM reservaciones WHERE id=?',[id]);if(!reservation)fail(404,'Reservación no encontrada');
-  return createLoan(db,req.user.id,reservation.afiliado_id,reservation.ejemplar_id,id);
- });ok(res,loan,201);
+
+router.post('/reservations', role('AFILIADO'), asyncRoute(async (req, res) => {
+  const { libro_id: bookId } = parse(z.object({ libro_id: positiveId }), req.body);
+  await refreshStatuses();
+  const saved = await withTx(async (session) => {
+    await eligible(session, req.user.id);
+    const book = await collection('libros').findOne(
+      { id: bookId, activo: true }, { session },
+    );
+    if (!book) fail(404, 'Libro no encontrado');
+
+    const existing = await collection('reservaciones').findOne({
+      afiliado_id: req.user.id,
+      libro_id: bookId,
+      estatus: 'ACTIVA',
+    }, { session });
+    if (existing) fail(409, 'Ya tienes una reservación activa para este título');
+
+    // La modificación condicional reserva un solo ejemplar aunque compitan usuarios.
+    const copy = await collection('ejemplares').findOneAndUpdate(
+      { libro_id: bookId, estatus: 'DISPONIBLE' },
+      { $set: { estatus: 'RESERVADO' } },
+      {
+        sort: { id: 1 },
+        returnDocument: 'after',
+        session
+      },
+    );
+    if (!copy) fail(409, 'No hay ejemplares disponibles para reservar');
+
+    const id = await nextId('reservaciones', session);
+    const now = new Date();
+    const expires = inHours(now, 24);
+    await collection('reservaciones').insertOne({
+      id,
+      afiliado_id: req.user.id,
+      libro_id: bookId,
+      ejemplar_id: copy.id,
+      estatus: 'ACTIVA',
+      creada_en: now,
+      vence_en: expires,
+      terminada_en: null,
+    }, { session });
+    await audit(session, req.user.id, 'RESERVAR', 'reservaciones', id, {
+      libro_id: bookId, ejemplar_id: copy.id,
+    });
+    return {
+      id,
+      titulo: book.titulo,
+      vence_en: expires
+    };
+  });
+
+  const account = await collection('cuentas').findOne({ id: req.user.id });
+  if (account) void notifyReservation(account.email, saved.titulo, saved.vence_en);
+  ok(res, saved, 201);
 }));
-router.post('/loans/:id/return',staff(),asyncRoute(async(req,res)=>{
- const id=requireId(req.params.id);
- const response=await withTx(async db=>{
-  const loan=await queryOne(db,'SELECT * FROM prestamos WHERE id=? FOR UPDATE',[id]);if(!loan)fail(404,'Préstamo no encontrado');
-  if(loan.devuelto_en)fail(409,'Este ejemplar ya fue devuelto');
-  const late=new Date(loan.vence_en)<new Date();
-  await db.execute('UPDATE prestamos SET devuelto_en=NOW(),devuelto_por=? WHERE id=?',[req.user.id,id]);
-  await db.execute("UPDATE ejemplares SET estatus='DISPONIBLE' WHERE id=? AND estatus='PRESTADO'",[loan.ejemplar_id]);
-  if(late)await db.execute("UPDATE afiliados SET estatus='PENALIZADO' WHERE cuenta_id=? AND estatus='ACTIVO'",[loan.afiliado_id]);
-  await audit(db,req.user.id,'DEVOLVER','prestamos',id,{con_retraso:late});
-  return {mensaje:late?'Devolución tardía. El afiliado quedó penalizado.':'Devolución registrada.',tardia:late};
- });ok(res,response);
+
+router.post('/reservations/:id/cancel', requireAuth, asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  await withTx(async (session) => {
+    const reservation = await collection('reservaciones').findOne({ id }, { session });
+    if (!reservation) fail(404, 'Reservación no encontrada');
+    if (req.user.rol === 'AFILIADO' && reservation.afiliado_id !== req.user.id) {
+      fail(403, 'No puedes cancelar una reservación ajena');
+    }
+    if (reservation.estatus !== 'ACTIVA' || reservation.vence_en <= new Date()) {
+      fail(409, 'Esta reservación ya no está activa');
+    }
+    await collection('reservaciones').updateOne(
+      { id, estatus: 'ACTIVA' },
+      { $set: { estatus: 'CANCELADA', terminada_en: new Date() } },
+      { session },
+    );
+    await collection('ejemplares').updateOne(
+      { id: reservation.ejemplar_id, estatus: 'RESERVADO' },
+      { $set: { estatus: 'DISPONIBLE' } },
+      { session },
+    );
+    await audit(session, req.user.id, 'CANCELAR', 'reservaciones', id);
+  });
+  ok(res, { mensaje: 'Reservación cancelada' });
 }));
-router.get('/stats',requireAuth,asyncRoute(async(req,res)=>{
- await refreshStatuses();
- if(req.user.rol==='AFILIADO'){
-  const [loans,reservations,late]=await Promise.all([
-   queryOne(pool,'SELECT COUNT(*) AS n FROM prestamos WHERE afiliado_id=? AND devuelto_en IS NULL',[req.user.id]),
-   queryOne(pool,"SELECT COUNT(*) AS n FROM reservaciones WHERE afiliado_id=? AND estatus='ACTIVA'",[req.user.id]),
-   queryOne(pool,'SELECT COUNT(*) AS n FROM prestamos WHERE afiliado_id=? AND devuelto_en IS NULL AND vence_en<NOW()',[req.user.id])
-  ]);return ok(res,{prestamos:loans.n,reservaciones:reservations.n,vencidos:late.n});
- }
- const [b,cp,a,rs,lo,late,genres,monthly]=await Promise.all([
-  queryOne(pool,'SELECT COUNT(*) AS n FROM libros WHERE activo=1'),
-  queryOne(pool,"SELECT COUNT(*) AS n FROM ejemplares WHERE estatus='DISPONIBLE'"),
-  queryOne(pool,"SELECT COUNT(*) AS n FROM afiliados WHERE estatus='ACTIVO'"),
-  queryOne(pool,"SELECT COUNT(*) AS n FROM reservaciones WHERE estatus='ACTIVA'"),
-  queryOne(pool,'SELECT COUNT(*) AS n FROM prestamos WHERE devuelto_en IS NULL'),
-  queryOne(pool,'SELECT COUNT(*) AS n FROM prestamos WHERE devuelto_en IS NULL AND vence_en<NOW()'),
-  queryRows(pool,'SELECT g.nombre,COUNT(*) AS total FROM prestamos pr JOIN ejemplares e ON e.id=pr.ejemplar_id JOIN libros l ON l.id=e.libro_id JOIN generos g ON g.id=l.genero_id GROUP BY g.id ORDER BY total DESC LIMIT 6'),
-  queryRows(pool,"SELECT DATE_FORMAT(inicio_en,'%Y-%m') AS mes,COUNT(*) AS total FROM prestamos WHERE inicio_en>=DATE_SUB(NOW(),INTERVAL 6 MONTH) GROUP BY mes ORDER BY mes")
- ]);
- ok(res,{libros:b.n,ejemplares:cp.n,afiliados:a.n,reservaciones:rs.n,prestamos:lo.n,vencidos:late.n,generos:genres,tendencia:monthly});
+
+router.get('/loans', requireAuth, asyncRoute(async (req, res) => {
+  await refreshStatuses();
+  const filter = req.user.rol === 'AFILIADO'
+    ? { afiliado_id: req.user.id }
+    : {};
+  const loans = await collection('prestamos').find(filter)
+    .sort({ inicio_en: -1 }).limit(400).toArray();
+  const items = (await Promise.all(loans.map(
+    (item) => details(item, 'loan'),
+  ))).filter(Boolean);
+  ok(res, items);
 }));
+
+async function createLoan(session, staffId, affiliateId, copyId, reservationId) {
+  await eligible(session, affiliateId);
+
+  // Esta escritura serializa los préstamos concurrentes del mismo afiliado.
+  await collection('afiliados').updateOne(
+    { cuenta_id: affiliateId, estatus: 'ACTIVO' },
+    { $inc: { revision_prestamos: 1 } },
+    { session },
+  );
+  const count = await collection('prestamos').countDocuments({
+    afiliado_id: affiliateId, devuelto_en: null,
+  }, { session });
+  if (count >= 5) fail(409, 'Un afiliado solo puede tener 5 préstamos activos');
+
+  const copy = await collection('ejemplares').findOne({ id: copyId }, { session });
+  const book = copy && await collection('libros').findOne({
+    id: copy.libro_id, activo: true,
+  }, { session });
+  if (!copy || !book) fail(404, 'Ejemplar no encontrado o libro inactivo');
+
+  if (reservationId) {
+    const reservation = await collection('reservaciones').findOne({
+      id: reservationId,
+    }, { session });
+    if (!reservation || reservation.afiliado_id !== affiliateId ||
+      reservation.ejemplar_id !== copyId ||
+      reservation.estatus !== 'ACTIVA' || reservation.vence_en <= new Date()) {
+      fail(409, 'La reservación no está vigente o no corresponde al afiliado');
+    }
+    if (copy.estatus !== 'RESERVADO') fail(409, 'El ejemplar no está reservado');
+    await collection('reservaciones').updateOne(
+      { id: reservationId, estatus: 'ACTIVA' },
+      { $set: { estatus: 'CUMPLIDA', terminada_en: new Date() } },
+      { session },
+    );
+  } else if (copy.estatus !== 'DISPONIBLE') {
+    fail(409, 'El ejemplar no está disponible para préstamo directo');
+  }
+
+  const expected = reservationId ? 'RESERVADO' : 'DISPONIBLE';
+  const changed = await collection('ejemplares').updateOne(
+    { id: copyId, estatus: expected },
+    { $set: { estatus: 'PRESTADO' } },
+    { session },
+  );
+  if (!changed.modifiedCount) fail(409, 'El ejemplar ya no está disponible');
+
+  const id = await nextId('prestamos', session);
+  const now = new Date();
+  const loan = {
+    id,
+    afiliado_id: affiliateId,
+    ejemplar_id: copyId,
+    reservacion_id: reservationId || null,
+    prestado_por: staffId,
+    devuelto_por: null,
+    inicio_en: now,
+    vence_en: inDays(now, 7),
+    devuelto_en: null,
+  };
+  await collection('prestamos').insertOne(loan, { session });
+  await audit(session, staffId, 'PRESTAR', 'prestamos', id, {
+    afiliado_id: affiliateId,
+    ejemplar_id: copyId,
+    reservacion_id: reservationId || null,
+  });
+  return plain(loan);
+}
+
+router.post('/loans', staff, asyncRoute(async (req, res) => {
+  const data = parse(z.object({
+    afiliado_id: positiveId,
+    ejemplar_id: positiveId,
+    reservacion_id: positiveId.nullable().optional(),
+  }), req.body);
+  await refreshStatuses();
+  const loan = await withTx((session) => createLoan(
+    session, req.user.id, data.afiliado_id,
+    data.ejemplar_id, data.reservacion_id || null,
+  ));
+  ok(res, loan, 201);
+}));
+
+router.post('/reservations/:id/fulfill', staff, asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  await refreshStatuses();
+  const loan = await withTx(async (session) => {
+    const reservation = await collection('reservaciones').findOne({ id }, { session });
+    if (!reservation) fail(404, 'Reservación no encontrada');
+    return createLoan(session, req.user.id, reservation.afiliado_id, reservation.ejemplar_id, id);
+  });
+  ok(res, loan, 201);
+}));
+
+router.post('/loans/:id/return', staff, asyncRoute(async (req, res) => {
+  const id = requireId(req.params.id);
+  const result = await withTx(async (session) => {
+    const loan = await collection('prestamos').findOne({ id }, { session });
+    if (!loan) fail(404, 'Préstamo no encontrado');
+    if (loan.devuelto_en) fail(409, 'Este ejemplar ya fue devuelto');
+    const late = loan.vence_en < new Date();
+    await collection('prestamos').updateOne({ id, devuelto_en: null }, {
+      $set: { devuelto_en: new Date(), devuelto_por: req.user.id },
+    }, { session });
+    await collection('ejemplares').updateOne(
+      { id: loan.ejemplar_id, estatus: 'PRESTADO' },
+      { $set: { estatus: 'DISPONIBLE' } }, { session },
+    );
+    if (late) {
+      await collection('afiliados').updateOne(
+        { cuenta_id: loan.afiliado_id, estatus: 'ACTIVO' },
+        { $set: { estatus: 'PENALIZADO' } }, { session },
+      );
+    }
+    await audit(session, req.user.id, 'DEVOLVER', 'prestamos', id, {
+      con_retraso: late,
+    });
+    return {
+      mensaje: late
+        ? 'Devolución tardía. El afiliado quedó penalizado.'
+        : 'Devolución registrada.',
+      tardia: late,
+    };
+  });
+  ok(res, result);
+}));
+
+router.get('/stats', requireAuth, asyncRoute(async (req, res) => {
+  await refreshStatuses();
+  const now = new Date();
+
+  if (req.user.rol === 'AFILIADO') {
+    const id = req.user.id;
+    const [loans, reservations, late] = await Promise.all([
+      collection('prestamos').countDocuments({ afiliado_id: id, devuelto_en: null }),
+      collection('reservaciones').countDocuments({ afiliado_id: id, estatus: 'ACTIVA' }),
+      collection('prestamos').countDocuments({
+        afiliado_id: id,
+        devuelto_en: null,
+        vence_en: { $lt: now },
+      }),
+    ]);
+    return ok(res, {
+      prestamos: loans,
+      reservaciones: reservations,
+      vencidos: late
+    });
+  }
+
+  const [books, copies, affiliates, reservations, loans, late, loanRecords] = await Promise.all([
+    collection('libros').countDocuments({ activo: true }),
+    collection('ejemplares').countDocuments({ estatus: 'DISPONIBLE' }),
+    collection('afiliados').countDocuments({ estatus: 'ACTIVO' }),
+    collection('reservaciones').countDocuments({ estatus: 'ACTIVA' }),
+    collection('prestamos').countDocuments({ devuelto_en: null }),
+    collection('prestamos').countDocuments({
+      devuelto_en: null, vence_en: { $lt: now },
+    }),
+    collection('prestamos').find().project({ ejemplar_id: 1, inicio_en: 1 }).toArray(),
+  ]);
+
+  const genres = new Map();
+  const monthly = new Map();
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+  for (const loan of loanRecords) {
+    if (loan.inicio_en >= sixMonthsAgo) {
+      const month = loan.inicio_en.toISOString().slice(0, 7);
+      monthly.set(month, (monthly.get(month) || 0) + 1);
+    }
+    const copy = await collection('ejemplares').findOne({ id: loan.ejemplar_id });
+    const book = copy && await collection('libros').findOne({ id: copy.libro_id });
+    const genre = book && await collection('generos').findOne({ id: book.genero_id });
+    if (genre) genres.set(genre.nombre, (genres.get(genre.nombre) || 0) + 1);
+  }
+
+  ok(res, {
+    libros: books,
+    ejemplares: copies,
+    afiliados: affiliates,
+    reservaciones: reservations,
+    prestamos: loans,
+    vencidos: late,
+    generos: [...genres].map(([nombre, total]) => ({ nombre, total }))
+      .sort((a, b) => b.total - a.total).slice(0, 6),
+    tendencia: [...monthly].sort(([a], [b]) => a.localeCompare(b))
+      .map(([mes, total]) => ({ mes, total })),
+  });
+}));
+
 export default router;
